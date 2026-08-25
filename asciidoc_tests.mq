@@ -1,0 +1,248 @@
+include "test"
+| include "asciidoc"
+|
+
+# -- Heading Tests --
+
+def test_document_title():
+  let result = asciidoc_to_markdown("= Document Title")
+  | assert_eq(result, "# Document Title")
+end
+
+def test_section_level2():
+  let result = asciidoc_to_markdown("== Section")
+  | assert_eq(result, "## Section")
+end
+
+def test_section_level3_to_6():
+  let result = asciidoc_to_markdown("=== L3\n\n==== L4\n\n===== L5\n\n====== L6")
+  | assert_eq(result, "### L3\n\n#### L4\n\n##### L5\n\n###### L6")
+end
+
+def test_heading_with_inline_formatting():
+  let result = asciidoc_to_markdown("== A *bold* heading")
+  | assert_eq(result, "## A **bold** heading")
+end
+
+# -- Paragraph Tests --
+
+def test_simple_paragraph():
+  let result = asciidoc_to_markdown("Just a plain paragraph.")
+  | assert_eq(result, "Just a plain paragraph.")
+end
+
+def test_multiple_paragraphs():
+  let result = asciidoc_to_markdown("First paragraph.\n\nSecond paragraph.")
+  | assert_eq(result, "First paragraph.\n\nSecond paragraph.")
+end
+
+def test_wrapped_paragraph_lines_join_with_space():
+  let result = asciidoc_to_markdown("Line one\nline two\nline three.")
+  | assert_eq(result, "Line one line two line three.")
+end
+
+def test_explicit_line_break():
+  let result = asciidoc_to_markdown("Line one +\nline two.")
+  | assert_eq(result, "Line one  \nline two.")
+end
+
+# -- Inline Formatting Tests --
+
+def test_inline_bold_constrained():
+  let result = ad_inline("a *bold* word")
+  | assert_eq(result, "a **bold** word")
+end
+
+def test_inline_bold_unconstrained():
+  let result = ad_inline("un**believ**able")
+  | assert_eq(result, "un**believ**able")
+end
+
+def test_inline_italic_constrained():
+  let result = ad_inline("an _italic_ word")
+  | assert_eq(result, "an *italic* word")
+end
+
+def test_inline_italic_unconstrained():
+  let result = ad_inline("__strongly emphasized__")
+  | assert_eq(result, "*strongly emphasized*")
+end
+
+def test_inline_italic_does_not_match_snake_case():
+  let result = ad_inline("a snake_case_identifier stays put")
+  | assert_eq(result, "a snake_case_identifier stays put")
+end
+
+def test_inline_adjacent_emphasis_spans():
+  let result = ad_inline("*first* *second*")
+  | assert_eq(result, "**first** **second**")
+end
+
+def test_inline_monospace_untouched():
+  let result = ad_inline("a `code_snippet` block")
+  | assert_eq(result, "a `code_snippet` block")
+end
+
+def test_inline_monospace_protects_inner_markup():
+  let result = ad_inline("a `*not bold*` span")
+  | assert_eq(result, "a `*not bold*` span")
+end
+
+def test_inline_link_macro():
+  let result = ad_inline("link:foo.html[Foo Page]")
+  | assert_eq(result, "[Foo Page](foo.html)")
+end
+
+def test_inline_bare_url_macro():
+  let result = ad_inline("See https://example.com[Example] now.")
+  | assert_eq(result, "See [Example](https://example.com) now.")
+end
+
+def test_inline_image_macro():
+  let result = ad_inline("an image:icon.png[Icon] inline")
+  | assert_eq(result, "an ![Icon](icon.png) inline")
+end
+
+# -- List Tests --
+
+def test_unordered_list():
+  let result = asciidoc_to_markdown("* one\n* two\n* three")
+  | assert_eq(result, "- one\n- two\n- three")
+end
+
+def test_unordered_list_dash_marker():
+  let result = asciidoc_to_markdown("- one\n- two")
+  | assert_eq(result, "- one\n- two")
+end
+
+def test_unordered_list_nested():
+  let result = asciidoc_to_markdown("* one\n** nested\n* two")
+  | assert_eq(result, "- one\n  - nested\n- two")
+end
+
+def test_ordered_list():
+  let result = asciidoc_to_markdown(". first\n. second\n. third")
+  | assert_eq(result, "1. first\n1. second\n1. third")
+end
+
+def test_ordered_list_digit_marker():
+  let result = asciidoc_to_markdown("1. first\n2. second")
+  | assert_eq(result, "1. first\n1. second")
+end
+
+def test_ordered_list_nested():
+  let result = asciidoc_to_markdown(". first\n.. nested\n. second")
+  | assert_eq(result, "1. first\n  1. nested\n1. second")
+end
+
+def test_checklist_unchecked_and_checked():
+  let result = asciidoc_to_markdown("* [ ] todo\n* [x] done\n* [*] alt-done")
+  | assert_eq(result, "- [ ] todo\n- [x] done\n- [x] alt-done")
+end
+
+# -- Code / Literal Block Tests --
+
+def test_source_block_with_language():
+  let result = asciidoc_to_markdown("[source,rust]\n----\nfn main() {}\n----")
+  | assert_eq(result, "```rust\nfn main() {}\n```")
+end
+
+def test_listing_block_without_language():
+  let result = asciidoc_to_markdown("----\nplain text\n----")
+  | assert_eq(result, "```\nplain text\n```")
+end
+
+def test_literal_block():
+  let result = asciidoc_to_markdown("....\nliteral text\n....")
+  | assert_eq(result, "```\nliteral text\n```")
+end
+
+# -- Quote Block Tests --
+
+def test_quote_block_plain():
+  let result = asciidoc_to_markdown("____\nA quotation.\n____")
+  | assert_eq(result, "> A quotation.")
+end
+
+def test_quote_block_with_attribution():
+  let result = asciidoc_to_markdown("[quote, Ada Lovelace, Notes]\n____\nOriginate nothing.\n____")
+  | assert_eq(result, "> Originate nothing.\n> — Ada Lovelace, Notes")
+end
+
+def test_quote_block_with_author_only():
+  let result = asciidoc_to_markdown("[quote, Ada Lovelace]\n____\nOriginate nothing.\n____")
+  | assert_eq(result, "> Originate nothing.\n> — Ada Lovelace")
+end
+
+# -- Admonition Tests --
+
+def test_admonition_paragraph():
+  let result = asciidoc_to_markdown("NOTE: Remember this.")
+  | assert_eq(result, "> [!NOTE]\n> Remember this.")
+end
+
+def test_admonition_paragraph_multiline():
+  let result = asciidoc_to_markdown("TIP: First line.\nSecond line.")
+  | assert_eq(result, "> [!TIP]\n> First line. Second line.")
+end
+
+def test_admonition_block_form():
+  let result = asciidoc_to_markdown("[WARNING]\n====\nDanger ahead.\n====")
+  | assert_eq(result, "> [!WARNING]\n> Danger ahead.")
+end
+
+def test_admonition_all_kinds():
+  let result = asciidoc_to_markdown("IMPORTANT: a\n\nCAUTION: b")
+  | assert_eq(result, "> [!IMPORTANT]\n> a\n\n> [!CAUTION]\n> b")
+end
+
+# -- Horizontal Rule Tests --
+
+def test_horizontal_rule():
+  let result = asciidoc_to_markdown("Above.\n\n'''\n\nBelow.")
+  | assert_eq(result, "Above.\n\n---\n\nBelow.")
+end
+
+# -- Table Tests --
+
+def test_table():
+  let result = asciidoc_to_markdown("|===\n|Name |Age\n\n|Alice |30\n|Bob |25\n|===")
+  | assert_eq(result, "| Name | Age |\n| --- | --- |\n| Alice | 30 |\n| Bob | 25 |")
+end
+
+def test_table_ignores_leading_attribute_line():
+  let result = asciidoc_to_markdown("[cols=\"1,1\"]\n|===\n|A |B\n\n|1 |2\n|===")
+  | assert_eq(result, "| A | B |\n| --- | --- |\n| 1 | 2 |")
+end
+
+# -- Image Tests --
+
+def test_block_image():
+  let result = asciidoc_to_markdown("image::diagram.png[A diagram]")
+  | assert_eq(result, "![A diagram](diagram.png)")
+end
+
+# -- Comment Tests --
+
+def test_line_comment_removed():
+  let result = asciidoc_to_markdown("Before.\n\n// a comment\n\nAfter.")
+  | assert_eq(result, "Before.\n\nAfter.")
+end
+
+def test_block_comment_removed():
+  let result = asciidoc_to_markdown("Before.\n\n////\nhidden\nstill hidden\n////\n\nAfter.")
+  | assert_eq(result, "Before.\n\nAfter.")
+end
+
+# -- Complex / Integration Tests --
+
+def test_realistic_document():
+  let input = "= Title\n\n== Intro\n\nThis has *bold* and _italic_ text.\n\n* item one\n* item two\n\nNOTE: Keep this in mind."
+  | let result = asciidoc_to_markdown(input)
+  | assert_eq(result, "# Title\n\n## Intro\n\nThis has **bold** and *italic* text.\n\n- item one\n- item two\n\n> [!NOTE]\n> Keep this in mind.")
+end
+
+def test_empty_input():
+  let result = asciidoc_to_markdown("")
+  | assert_eq(result, "")
+end

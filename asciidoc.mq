@@ -1,0 +1,307 @@
+# AsciiDoc to Markdown converter implemented in mq.
+# https://docs.asciidoctor.org/asciidoc/latest/
+#
+# Supports a common subset of AsciiDoc: document/section titles, paragraphs,
+# bold/italic/monospace inline formatting, links, images, ordered/unordered
+# (optionally nested and checklisted) lists, source/listing/literal blocks,
+# quote blocks, admonitions (paragraph and block form), horizontal rules,
+# tables, and line/block comments.
+
+import "md"
+
+def _ad_is_blank(line): trim(line) == "";
+
+def _ad_is_block_boundary(t):
+  _ad_is_blank(t)
+  || is_regex_match(t, "^=+\\s+\\S.*$")
+  || is_regex_match(t, "^'{3,}$")
+  || is_regex_match(t, "^-{4,}$")
+  || is_regex_match(t, "^\\.{4,}$")
+  || is_regex_match(t, "^_{4,}$")
+  || is_regex_match(t, "^={4,}$")
+  || is_regex_match(t, "^\\|={3,}$")
+  || is_regex_match(t, "^/{4,}$")
+  || starts_with(t, "//")
+  || is_regex_match(t, "^\\[.+\\]$")
+  || is_regex_match(t, "^(NOTE|TIP|IMPORTANT|WARNING|CAUTION):\\s*.*$")
+  || is_regex_match(t, "^([*]+|\\.+|-|[0-9]+\\.)\\s+.+$")
+end
+
+# -- Inline formatting --
+
+def _ad_split_code_spans(s):
+  var segments = []
+  | var buf = ""
+  | var i = 0
+  | let n = len(s)
+  | let _ = while (i < n):
+      let c = s[i]
+      | if (c == "`"):
+          do
+            segments = if (buf != ""): segments + [{"code": false, "text": buf}] else: segments
+            | buf = ""
+            | var j = i + 1
+            | var code_buf = ""
+            | var found = false
+            | let _ = while (j < n && !found):
+                if (s[j] == "`"):
+                  do found = true | code_buf end
+                else:
+                  do code_buf = code_buf + s[j] | j += 1 | code_buf end
+              end
+            | if (found):
+                do segments = segments + [{"code": true, "text": code_buf}] | i = j + 1 | segments end
+              else:
+                do segments = segments + [{"code": false, "text": "`" + code_buf}] | i = j | segments end
+          end
+        else:
+          do buf = buf + c | i += 1 | segments end
+    end
+  | if (buf != ""): segments + [{"code": false, "text": buf}] else: segments
+end
+
+def _ad_format_inline(s):
+  s
+  | gsub("image:{1,2}(\\S+?)\\[([^\\]]*)\\]", "![$2]($1)")
+  | gsub("link:(\\S+?)\\[([^\\]]*)\\]", "[$2]($1)")
+  | gsub("(https?://[^\\s\\[]+)\\[([^\\]]*)\\]", "[$2]($1)")
+  | gsub("\\*{1,2}([^\\s*][^*]*?)\\*{1,2}", "**$1**")
+  | gsub("\\b_{1,2}([^_\\s][^_]*?)_{1,2}\\b", "*$1*")
+end
+
+# Converts AsciiDoc inline formatting (bold, italic, links, images) in `s` to
+# Markdown, leaving `` `monospace` `` spans untouched.
+def ad_inline(s):
+  let segments = _ad_split_code_spans(s)
+  | join(map(segments, fn(seg): if (seg["code"]): "`" + seg["text"] + "`" else: _ad_format_inline(seg["text"]);), "")
+end
+
+# -- Block helpers --
+
+def _ad_read_until(lines, start, n, pattern):
+  var j = start
+  | var content = []
+  | var done = false
+  | let _ = while (j < n && !done):
+      if (is_regex_match(trim(lines[j]), pattern)):
+        do done = true | content end
+      else:
+        do content = content + [lines[j]] | j += 1 | content end
+    end
+  | [j + 1, content]
+end
+
+def _ad_heading(t):
+  let cap = capture(t, "^(?P<level>=+)\\s+(?P<title>\\S.*)$")
+  | if (is_empty(cap)): None
+    else:
+      do
+        let level = if (len(cap["level"]) > 6): 6 else: len(cap["level"])
+        | to_string(md::h(ad_inline(trim(cap["title"])), level))
+      end
+end
+
+def _ad_list_item_info(t):
+  let cap = capture(t, "^(?P<marker>[*]+|\\.+|-|[0-9]+\\.)\\s+(?:\\[(?P<check>[ xX*])\\]\\s+)?(?P<text>.+)$")
+  | if (is_empty(cap)): None
+    else:
+      do
+        let marker = cap["marker"]
+        | let ordered = is_regex_match(marker, "^([.]+|[0-9]+\\.)$")
+        | let level = if (is_regex_match(marker, "^[*.]+$")): len(marker) - 1 else: 0
+        | let checked = if (has(cap, "check")): (downcase(cap["check"]) == "x" || cap["check"] == "*") else: None
+        | {"ordered": ordered, "level": level, "checked": checked, "text": cap["text"]}
+      end
+end
+
+def _ad_render_list_item(info):
+  let text = ad_inline(info["text"])
+  | let indent = repeat("  ", info["level"])
+  | if (info["ordered"]): indent + "1. " + text
+    elif (is_none(info["checked"])): indent + "- " + text
+    else: indent + "- [" + (if (info["checked"]): "x" else: " ") + "] " + text
+end
+
+def _ad_parse_list(lines, i, n):
+  var j = i
+  | var items = []
+  | var done = false
+  | let _ = while (j < n && !done):
+      let info = _ad_list_item_info(trim(lines[j]))
+      | if (is_none(info)):
+          do done = true | items end
+        else:
+          do items = items + [info] | j += 1 | items end
+    end
+  | [j, join(map(items, _ad_render_list_item), "\n")]
+end
+
+def _ad_table_row_cells(l):
+  let t = trim(l)
+  | if (t == "" || !starts_with(t, "|")): None
+    else: map(split(slice(t, 1, len(t)), "\\|"), fn(c): ad_inline(trim(c)); )
+end
+
+def _ad_parse_table(lines, i, n):
+  let r = _ad_read_until(lines, i + 1, n, "^\\|={3,}$")
+  | let next_i = r[0]
+  | let rows = compact_map(r[1], _ad_table_row_cells)
+  | if (is_empty(rows)): [next_i, None]
+    else:
+      do
+        let header = rows[0]
+        | let data = rows[1:len(rows)]
+        | let header_row = "| " + join(header, " | ") + " |"
+        | let sep_row = "| " + join(map(header, fn(_): "---"; ), " | ") + " |"
+        | let data_rows = map(data, fn(row): "| " + join(row, " | ") + " |"; )
+        | [next_i, join([header_row, sep_row] + data_rows, "\n")]
+      end
+end
+
+def _ad_join_para_lines(raw_lines):
+  var out = ""
+  | var pending_break = false
+  | var i = 0
+  | let n = len(raw_lines)
+  | let _ = while (i < n):
+      let raw = trim(raw_lines[i])
+      | let is_break = is_regex_match(raw, "\\s\\+$")
+      | let text = if (is_break): trim(slice(raw, 0, len(raw) - 1)) else: raw
+      | out = if (i == 0): text else: out + (if (pending_break): "  \n" else: " ") + text
+      | pending_break = is_break
+      | i += 1
+      | out
+    end
+  | out
+end
+
+def _ad_parse_paragraph(lines, i, n):
+  var j = i
+  | var raw_lines = []
+  | var done = false
+  | let _ = while (j < n && !done):
+      if (_ad_is_block_boundary(trim(lines[j]))):
+        do done = true | raw_lines end
+      else:
+        do raw_lines = raw_lines + [lines[j]] | j += 1 | raw_lines end
+    end
+  | [j, ad_inline(_ad_join_para_lines(raw_lines))]
+end
+
+def _ad_admonition_kind(t):
+  let cap = capture(t, "^(?P<kind>NOTE|TIP|IMPORTANT|WARNING|CAUTION):")
+  | if (is_empty(cap)): None else: downcase(cap["kind"])
+end
+
+def _ad_parse_admonition_para(lines, i, n):
+  let cap = capture(trim(lines[i]), "^(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION):\\s*(?P<text>.*)$")
+  | let kind = _ad_admonition_kind(trim(lines[i]))
+  | var raw_lines = [cap["text"]]
+  | var j = i + 1
+  | var done = false
+  | let _ = while (j < n && !done):
+      if (_ad_is_block_boundary(trim(lines[j]))):
+        do done = true | raw_lines end
+      else:
+        do raw_lines = raw_lines + [lines[j]] | j += 1 | raw_lines end
+    end
+  | [j, to_string(md::callout(_ad_join_para_lines(raw_lines), kind))]
+end
+
+def _ad_block_attrs(t): capture(t, "^\\[(?P<name>[a-zA-Z]+)(?P<rest>[^\\]]*)\\]$");
+
+def _ad_source_lang(t):
+  let cap = capture(t, "^\\[source\\s*,\\s*(?P<lang>[^,\\]]+)")
+  | if (is_empty(cap)): "" else: trim(cap["lang"])
+end
+
+def _ad_quote_attribution(t):
+  let cap = capture(t, "^\\[quote\\s*,\\s*(?P<author>[^,\\]]*)\\s*(?:,\\s*(?P<source>[^\\]]*))?\\]$")
+  | if (is_empty(cap)): ""
+    else:
+      do
+        let author = trim(get_or(cap, "author", ""))
+        | let source = trim(get_or(cap, "source", ""))
+        | if (author == "" && source == ""): ""
+          elif (source == ""): "\n> — " + author
+          elif (author == ""): "\n> — " + source
+          else: "\n> — " + author + ", " + source
+      end
+end
+
+def _ad_parse_attr_block(lines, i, n):
+  let attrs = _ad_block_attrs(trim(lines[i]))
+  | let name = if (is_empty(attrs)): "" else: downcase(attrs["name"])
+  | let delim = if (i + 1 < n): trim(lines[i + 1]) else: ""
+  | if (name == "source" && is_regex_match(delim, "^-{4,}$")):
+      do
+        let r = _ad_read_until(lines, i + 2, n, "^-{4,}$")
+        | [r[0], to_string(md::code(join(r[1], "\n"), _ad_source_lang(trim(lines[i]))))]
+      end
+    elif (name == "quote" && is_regex_match(delim, "^_{4,}$")):
+      do
+        let r = _ad_read_until(lines, i + 2, n, "^_{4,}$")
+        | [r[0], to_string(md::blockquote(ad_inline(join(r[1], "\n")))) + _ad_quote_attribution(trim(lines[i]))]
+      end
+    elif (in(["note", "tip", "important", "warning", "caution"], name) && is_regex_match(delim, "^={4,}$")):
+      do
+        let r = _ad_read_until(lines, i + 2, n, "^={4,}$")
+        | [r[0], to_string(md::callout(ad_inline(join(r[1], "\n")), name))]
+      end
+    elif (is_regex_match(delim, "^={4,}$")):
+      do
+        let r = _ad_read_until(lines, i + 2, n, "^={4,}$")
+        | [r[0], ad_inline(join(r[1], "\n"))]
+      end
+    else:
+      [i + 1, None]
+end
+
+def _ad_dispatch_block(lines, i, n):
+  let line = lines[i]
+  | let t = trim(line)
+  | if (_ad_is_blank(t)): [i + 1, None]
+    elif (is_regex_match(t, "^/{4,}$")):
+      do
+        let r = _ad_read_until(lines, i + 1, n, "^/{4,}$")
+        | [r[0], None]
+      end
+    elif (starts_with(t, "//")): [i + 1, None]
+    elif (!is_empty(capture(t, "^(?P<level>=+)\\s+(?P<title>\\S.*)$"))): [i + 1, _ad_heading(t)]
+    elif (is_regex_match(t, "^'{3,}$")): [i + 1, "---"]
+    elif (is_regex_match(t, "^-{4,}$")):
+      do
+        let r = _ad_read_until(lines, i + 1, n, "^-{4,}$")
+        | [r[0], to_string(md::code(join(r[1], "\n"), ""))]
+      end
+    elif (is_regex_match(t, "^\\.{4,}$")):
+      do
+        let r = _ad_read_until(lines, i + 1, n, "^\\.{4,}$")
+        | [r[0], to_string(md::code(join(r[1], "\n"), ""))]
+      end
+    elif (is_regex_match(t, "^_{4,}$")):
+      do
+        let r = _ad_read_until(lines, i + 1, n, "^_{4,}$")
+        | [r[0], to_string(md::blockquote(ad_inline(join(r[1], "\n"))))]
+      end
+    elif (is_regex_match(t, "^\\|={3,}$")): _ad_parse_table(lines, i, n)
+    elif (is_regex_match(t, "^\\[.+\\]$")): _ad_parse_attr_block(lines, i, n)
+    elif (!is_none(_ad_admonition_kind(t))): _ad_parse_admonition_para(lines, i, n)
+    elif (!is_none(_ad_list_item_info(t))): _ad_parse_list(lines, i, n)
+    else: _ad_parse_paragraph(lines, i, n)
+end
+
+# Converts an AsciiDoc document `input` to a Markdown string.
+def asciidoc_to_markdown(input):
+  let ls = lines(to_string(input))
+  | let n = len(ls)
+  | var i = 0
+  | var blocks = []
+  | let _ = while (i < n):
+      let r = _ad_dispatch_block(ls, i, n)
+      | blocks = if (is_none(r[1])): blocks else: blocks + [r[1]]
+      | i = r[0]
+      | blocks
+    end
+  | join(blocks, "\n\n")
+end
